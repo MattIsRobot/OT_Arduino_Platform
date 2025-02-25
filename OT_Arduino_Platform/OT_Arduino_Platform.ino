@@ -9,7 +9,7 @@
 #include <AutoPID.h>  // PID Controllers for thermocouple + heaters
 
 #include <Vector.h>
-#include <Hashtable.h>  // Mapping commands to handlers
+#include "Hashtable.h"  // Mapping commands to handlers
 
 #include <avr/interrupt.h>  // For custom uint64 timer instead of default uint32
 // Required to avoid problems with integer overflow after 47 days
@@ -22,8 +22,9 @@ volatile uint64_t longTimer = 0;  // milliseconds since board was powered/last r
   return;
 
 #define CHECK_ARG(arg) \
-  if (arg == NULL) THROW_BAD_ARGS();
-
+  if (arg == -1) { \
+    THROW_BAD_ARGS() \
+  };
 
 // Define LCD
 SerLCD lcd;  // Initialize the library with default I2C address 0x72
@@ -38,22 +39,38 @@ public:
   uint8_t numRelays;
   uint8_t relayIdsStart;  // i.e. for the second quad relay board this is 4
 
-  RelayBoard(uint8_t address, uint8_t numRelays, uint8_t relayIdsStart) {
-    qwiicRelay = new Qwiic_Relay(address);
+  RelayBoard(Qwiic_Relay *primitiveRelay, uint8_t numRelays, uint8_t relayIdsStart) {
+    qwiicRelay = primitiveRelay;
     this->numRelays = numRelays;
     this->relayIdsStart = relayIdsStart;
+    begin();
+
+    // Start with all relays off
+    for (int i = 0; i < numRelays; i++) {
+      qwiicRelay->turnRelayOff(i + 1);
+    }
   }
 
   void enable(int localId) {
-    qwiicRelay->turnRelayOn(localId);
+    if (numRelays == 1) {
+      qwiicRelay->turnRelayOn();
+    } else {
+      qwiicRelay->turnRelayOn(localId);
+    }
   }
 
   void disable(int localId) {
-    qwiicRelay->turnRelayOff(localId);
+    if (numRelays == 1)
+      qwiicRelay->turnRelayOff();
+    else
+      qwiicRelay->turnRelayOff(localId);
   }
 
   int getEnabled(int localId) {
-    return qwiicRelay->getState(localId);
+    if (numRelays == 1)
+      qwiicRelay->getState();
+    else
+      qwiicRelay->getState(localId);
   }
 
   bool begin() {
@@ -68,7 +85,7 @@ public:
     if (!qwiicRelay->begin()) {
       // Display message on lcd and transmit via serial
       String err =
-        "Relay " + String(relayIdsStart) + "-" + String(relayIdsStart + numRelays) + " not found";
+        "Relay " + String((int)relayIdsStart) + "-" + String((int)relayIdsStart + (int)numRelays) + " not found";
 
       lcd.setCursor(0, 0);
       lcd.print(err);
@@ -81,7 +98,7 @@ public:
 class Relay {
 private:
   RelayBoard *parentBoard = nullptr;
-  uint8_t numberOnBoard;
+  uint8_t numberOnBoard = 0;
 
 public:
   Relay(RelayBoard *relayBoard, uint8_t localRelayNumber) {
@@ -119,7 +136,7 @@ private:
   // PID Control Loop
   AutoPID *pidLoop;
   double currentTemperature;
-  double targetTemperature;
+  double targetTemperature = 20.0;
   double pidOut;
 
 public:
@@ -190,6 +207,9 @@ public:
            UltrasonicDriver *ultrasonicRelay) {
     this->heater = new Heater(thermoCoupleAddress, heaterRelay, kp, ki, kd);
     this->ultrasonic = ultrasonicRelay;
+
+    // Verify thermocouple
+    heater->checkThermocouple();
   }
 };
 
@@ -201,21 +221,17 @@ Vector<String> tokens;
 // Define relay boards wired in
 // Relay 0-3
 #define RELAY_ADDR 0x6D  // Alternate address 0x6C
-RelayBoard* quadRelay;
+RelayBoard *quadRelay;
 // Relay 4-7
 // Remember this is NOT a standard I2C add - it was coded to the quad relay.
 #define RELAY_ADDR2 0x6C  // 0x09
-RelayBoard* quadRelay2;
+RelayBoard *quadRelay2;
 // Solid state relays for 110VAC
 #define RELAY_SOLIDSTATE 0x0A
-RelayBoard* solidStateRelay;
+RelayBoard *solidStateRelay;
 // Relay 8
 #define RELAY_ADDR3 0x18
-RelayBoard* singleRelay3;
-
-RelayBoard* relayBoards[4] = {
-  quadRelay, quadRelay2, solidStateRelay, singleRelay3
-};
+RelayBoard *singleRelay3;
 
 // Create hashtable to map commands to their associated handlers
 // Handlers take no args and get other inputs from strtok directly
@@ -224,18 +240,20 @@ Hashtable<String, void (*)()> commandHandlers;
 // For controlling relays set to turn off at specific times
 struct RelayOnTimer {
   Relay *relay;
-  uint8_t endTime;
+  uint32_t endTime;
 };
 
-Vector<RelayOnTimer> relaysOnTimers;
+Vector<RelayOnTimer *> relaysOnTimers;
+RelayOnTimer *relaysOnTimersStorage[6];  // Can store 6 relays on timers
 
 // ====================================
 // Define board setup and init components
 // ====================================
-CellBase* bases[2] = {
+CellBase *bases[2] = {
   nullptr, nullptr
 };
 
+// Reinitialized in setup since RelayBoard are not yet initted
 Pump pumps[6] = {
   Pump(quadRelay, 1),
   Pump(quadRelay, 2),
@@ -249,13 +267,13 @@ Pump pumps[6] = {
 // Update the LCD with current base setpoints and temperatures
 void write_to_lcd() {
   for (int i = 0; i < 2; i++) {
-    lcd.setCursor(i * 9, 0);
-    lcd.print(String(i) + "|");
+    lcd.setCursor((byte)(i * 8), 0);
+    lcd.print(String(i) + ":");
     lcd.print(bases[i]->heater->getTemperature());
     lcd.print(" ");
 
-    lcd.setCursor(i * 9, 1);
-    lcd.print("T|");
+    lcd.setCursor((byte)(i * 8), 1);
+    lcd.print("T:");
     lcd.print(bases[i]->heater->getTargetTemperature());
     lcd.print(" ");
   }
@@ -264,7 +282,9 @@ void write_to_lcd() {
 template<class T>
 T getArg() {
   char *argAsChars = strtok(NULL, " ");
-  if (argAsChars == NULL) return NULL;
+  if (argAsChars == NULL) {
+    return -1;
+  }
 
   // Convert the argument based on type
   if (sizeof(T) == sizeof(int)) {
@@ -273,9 +293,8 @@ T getArg() {
     return atof(argAsChars);  // Convert to float
   }
 
-  return NULL;
+  return -1;
 }
-
 
 // ====================================
 // Define Command Handlers
@@ -286,8 +305,9 @@ void getPumpState() {
   CHECK_ARG(pumpNumber);
 
   // Check that pump number is valid
-  if (pumpNumber < 0 || pumpNumber > sizeof(pumps))
+  if (pumpNumber < 0 || pumpNumber > sizeof(pumps)) {
     THROW_BAD_ARGS();
+  }
 
   // Send state over serial
   Serial.println(pumps[pumpNumber].getState());
@@ -301,8 +321,9 @@ void enablePump() {
   CHECK_ARG(pumpNumber);
 
   // Check that pump number is valid
-  if (pumpNumber < 0 || pumpNumber > sizeof(pumps))
+  if (pumpNumber < 0 || pumpNumber >= sizeof(pumps)) {
     THROW_BAD_ARGS();
+  }
 
   // Turn on the pump
   pumps[pumpNumber].enable();
@@ -314,20 +335,24 @@ void enablePumpForTime() {
   // Get pump number and time to be on from args
   int pumpNumber = getArg<int>();
   CHECK_ARG(pumpNumber);
-  float timeOn = getArg<float>(); // time in ms
+  int timeOn = getArg<int>();  // time in ms
   CHECK_ARG(timeOn);
 
   // Check that pump number is valid
-  if (pumpNumber < 0 || pumpNumber > sizeof(pumps))
+  if (pumpNumber < 0 || pumpNumber > sizeof(pumps)) {
     THROW_BAD_ARGS();
+  }
 
   // Turn on the pump
   pumps[pumpNumber].enable();
 
   // Create RelayOnTimer struct for the loop
-  RelayOnTimer relayOnTimer;
-  relayOnTimer.relay = &pumps[pumpNumber];
-  relayOnTimer.endTime = longTimer + timeOn;
+  RelayOnTimer *relayOnTimer = new RelayOnTimer();
+  relayOnTimer->relay = &pumps[pumpNumber];
+  
+  noInterrupts();  // Temporarily disable interrupts to safely copy the variable
+  relayOnTimer->endTime = longTimer + timeOn;
+  interrupts();  // Re-enable interrupts
 
   // Add relayOnTimer to the list
   relaysOnTimers.push_back(relayOnTimer);
@@ -341,8 +366,9 @@ void disablePump() {
   CHECK_ARG(pumpNumber);
 
   // Check that pump number is valid
-  if (pumpNumber < 0 || pumpNumber > sizeof(pumps))
+  if (pumpNumber < 0 || pumpNumber >= sizeof(pumps)) {
     THROW_BAD_ARGS();
+  }
 
   // Turn on the pump
   pumps[pumpNumber].disable();
@@ -358,8 +384,9 @@ void setBaseTemp() {
   CHECK_ARG(setpoint);
 
   // Check that base number is valid
-  if (baseNumber < 0 || baseNumber > sizeof(bases))
+  if (baseNumber < 0 || baseNumber > sizeof(bases)) {
     THROW_BAD_ARGS();
+  }
 
   // Set the base's temperature
   bases[baseNumber]->heater->setTemperature(setpoint);
@@ -373,11 +400,12 @@ void getBaseTemp() {
   CHECK_ARG(baseNumber);
 
   // Check that base number is valid
-  if (baseNumber < 0 || baseNumber > sizeof(bases))
+  if (baseNumber < 0 || baseNumber > sizeof(bases)) {
     THROW_BAD_ARGS();
+  }
 
   // Set the base's temperature
-  bases[baseNumber]->heater->getTemperature();
+  Serial.println(bases[baseNumber]->heater->getTemperature());
 
   FUNCTION_COMPLETE();
 }
@@ -388,8 +416,9 @@ void enableUltrasonic() {
   CHECK_ARG(baseNumber);
 
   // Check that base number is valid
-  if (baseNumber < 0 || baseNumber > sizeof(bases))
+  if (baseNumber < 0 || baseNumber > sizeof(bases)) {
     THROW_BAD_ARGS();
+  }
 
   // Enable the ultrasonic transducer for the base
   bases[baseNumber]->ultrasonic->enable();
@@ -403,8 +432,9 @@ void disableUltrasonic() {
   CHECK_ARG(baseNumber);
 
   // Check that base number is valid
-  if (baseNumber < 0 || baseNumber > sizeof(bases))
+  if (baseNumber < 0 || baseNumber > sizeof(bases)) {
     THROW_BAD_ARGS();
+  }
 
   // Disable the ultrasonic transducer for the base
   bases[baseNumber]->ultrasonic->disable();
@@ -413,20 +443,35 @@ void disableUltrasonic() {
 }
 
 void setup() {
-
   // Init serial and I2C communication
   Serial.begin(115200);
-  Serial.println("MADE IT TO SETUP");
   Wire.begin();
   Wire.setClock(100000);
 
+  // Initialize the LCD
+  lcd.begin(Wire);                  // Set up the LCD for I2C communication
+  lcd.setBacklight(255, 255, 255);  // Set backlight to bright white
+  lcd.setContrast(5);               // Set contrast. Lower to 0 for higher contrast.
+  lcd.disableSplash();              // Disables the splash screen
+  lcd.clear();                      // Clear the display - this moves the cursor to home position as well
+  lcd.print("Booting!");
+
+  // Setup vector to store relays on timers
+  relaysOnTimers.setStorage(relaysOnTimersStorage);
+
   // Init board components
-  quadRelay = new RelayBoard(RELAY_ADDR, 4, 0);
-  quadRelay2 = new RelayBoard(RELAY_ADDR2, 4, 4);
-  solidStateRelay = new RelayBoard(RELAY_SOLIDSTATE, 2, 8);
-  singleRelay3 = new RelayBoard(RELAY_ADDR3, 1, 9);
+  quadRelay = new RelayBoard(new Qwiic_Relay(RELAY_ADDR), 4, 0);
+  quadRelay2 = new RelayBoard(new Qwiic_Relay(RELAY_ADDR2), 4, 4);
+  solidStateRelay = new RelayBoard(new Qwiic_Relay(RELAY_SOLIDSTATE), 2, 8);
+  singleRelay3 = new RelayBoard(new Qwiic_Relay(RELAY_ADDR3), 1, 9);
   bases[0] = new CellBase(0x60, new Relay(solidStateRelay, 1), 0.12, 0.5, 1, new UltrasonicDriver(quadRelay2, 3));
   bases[1] = new CellBase(0x67, new Relay(solidStateRelay, 2), 0.12, 0.5, 1, new UltrasonicDriver(quadRelay2, 4));
+  pumps[0] = Pump(quadRelay, 1);
+  pumps[1] = Pump(quadRelay, 2);
+  pumps[2] = Pump(quadRelay, 3);
+  pumps[3] = Pump(quadRelay, 4);
+  pumps[4] = Pump(quadRelay2, 1);
+  pumps[5] = Pump(quadRelay2, 2);
 
   // Populate hashtable for handlers
   commandHandlers.put("get_pump_state", getPumpState);
@@ -439,23 +484,6 @@ void setup() {
 
   commandHandlers.put("get_base_temp", getBaseTemp);
   commandHandlers.put("set_base_temp", setBaseTemp);
-
-  // Initialize the LCD
-  lcd.begin(Wire);                  // Set up the LCD for I2C communication
-  lcd.setBacklight(255, 255, 255);  // Set backlight to bright white
-  lcd.setContrast(5);               // Set contrast. Lower to 0 for higher contrast.
-  lcd.clear();                      // Clear the display - this moves the cursor to home position as well
-  lcd.print("Booting!");
-
-  // Verify heaters are working
-  for (CellBase* base : bases) {
-    base->heater->checkThermocouple();
-  }
-
-  // Verify relay boards are working
-  for (RelayBoard* relayBoard : relayBoards) {
-    relayBoard->startup();
-  }
 
   // Set the targetTemperatures based on the EEPROM
   // read_from_eeprom_setPoints();
@@ -479,20 +507,19 @@ void setup() {
 // Interrupt handler for longTimer
 ISR(TIMER1_COMPA_vect) {
   // This will not overflow for half a billion years since uint64_t
-  longTimer++;  // Increment every 1 ms
+  longTimer = longTimer + 100; // 100ms have passed each time the interrupt triggers
 }
 
 void loop() {
+  delay(50);
   // Make a local copy to avoid reading while being updated by ISR
   uint64_t currentCount;
   noInterrupts();  // Temporarily disable interrupts to safely copy the variable
   currentCount = longTimer;
   interrupts();  // Re-enable interrupts
 
-  delay(100);
-
   // Run the heater pid loop for all bases
-  for (CellBase* base : bases) {
+  for (CellBase *base : bases) {
     base->heater->updateHeaterPID();
   }
 
@@ -502,9 +529,9 @@ void loop() {
   // Handle relays on timer if timer is complete
   // Interrupt isn't really necessary for this but could be added
   for (int i = 0; i < relaysOnTimers.size(); i++) {
-    RelayOnTimer *relayOnTimer = &(relaysOnTimers[i]);
-    // Handle millis int overflow to not have to reset every 47 days
-    if (relayOnTimer->endTime >= longTimer) {
+    RelayOnTimer *relayOnTimer = (relaysOnTimers[i]);
+    // Handle millis int overflow to not have to reset every 49 days
+    if (relayOnTimer->endTime <= longTimer) {
       // Turn relay off
       relayOnTimer->relay->disable();
 
@@ -519,7 +546,7 @@ void loop() {
   // This maintains the sync for Python scripting because wrapper will wait until response code is recieved
   if (relaysOnTimers.size() == 0) {
     // Get next command from pc
-    if (Serial.available()) {
+    while (Serial.available()) {
       char inputChar = Serial.read();
       if (inputChar != '\n')  // End of line
       {
@@ -533,7 +560,6 @@ void loop() {
         // Call the associated handler with the token name
         if (commandHandlers.containsKey((String)token)) {
           (*commandHandlers.get((String)token))();
-          Serial.println(String(token));
         }
 
         // Clear the command
