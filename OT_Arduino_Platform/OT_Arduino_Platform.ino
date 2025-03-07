@@ -78,7 +78,7 @@ public:
   }
 
   void setPWM(int localId, float dutyCycle) {
-    qwiicRelay->setSlowPWM(localId, dutyCycle);
+    // qwiicRelay->setSlowPWM(localId, dutyCycle);
   }
 
   void startup() {
@@ -426,6 +426,35 @@ void enableUltrasonic() {
   FUNCTION_COMPLETE();
 }
 
+void enableUltrasonicForTime() {
+  // Get base number and time to be on from args
+  int baseNumber = getArg<int>();
+  CHECK_ARG(baseNumber);
+  int timeOn = getArg<int>();  // time in ms
+  CHECK_ARG(timeOn);
+
+  // Check that pump number is valid
+  if (baseNumber < 0 || baseNumber > sizeof(bases)) {
+    THROW_BAD_ARGS();
+  }
+
+  // Turn on the pump
+  bases[baseNumber]->ultrasonic->enable();
+
+  // Create RelayOnTimer struct for the loop
+  RelayOnTimer *relayOnTimer = new RelayOnTimer();
+  relayOnTimer->relay = bases[baseNumber]->ultrasonic;
+  
+  noInterrupts();  // Temporarily disable interrupts to safely copy the variable
+  relayOnTimer->endTime = longTimer + timeOn;
+  interrupts();  // Re-enable interrupts
+
+  // Add relayOnTimer to the list
+  relaysOnTimers.push_back(relayOnTimer);
+
+  // FUNCTION_COMPLETE(); // Handled in void loop when timer has expired
+}
+
 void disableUltrasonic() {
   // Get base number from args
   int baseNumber = getArg<int>();
@@ -480,6 +509,7 @@ void setup() {
   commandHandlers.put("set_pump_on_time", enablePumpForTime);
 
   commandHandlers.put("set_ultrasonic_on", enableUltrasonic);
+  commandHandlers.put("set_ultrasonic_on_time", enableUltrasonicForTime);
   commandHandlers.put("set_ultrasonic_off", disableUltrasonic);
 
   commandHandlers.put("get_base_temp", getBaseTemp);
