@@ -305,7 +305,7 @@ void getPumpState() {
   CHECK_ARG(pumpNumber);
 
   // Check that pump number is valid
-  if (pumpNumber < 0 || pumpNumber > sizeof(pumps)) {
+  if (pumpNumber < 0 || pumpNumber >= sizeof(pumps)) {
     THROW_BAD_ARGS();
   }
 
@@ -339,7 +339,7 @@ void enablePumpForTime() {
   CHECK_ARG(timeOn);
 
   // Check that pump number is valid
-  if (pumpNumber < 0 || pumpNumber > sizeof(pumps)) {
+  if (pumpNumber < 0 || pumpNumber >= sizeof(pumps)) {
     THROW_BAD_ARGS();
   }
 
@@ -384,7 +384,7 @@ void setBaseTemp() {
   CHECK_ARG(setpoint);
 
   // Check that base number is valid
-  if (baseNumber < 0 || baseNumber > sizeof(bases)) {
+  if (baseNumber < 0 || baseNumber >= sizeof(bases)) {
     THROW_BAD_ARGS();
   }
 
@@ -400,7 +400,7 @@ void getBaseTemp() {
   CHECK_ARG(baseNumber);
 
   // Check that base number is valid
-  if (baseNumber < 0 || baseNumber > sizeof(bases)) {
+  if (baseNumber < 0 || baseNumber >= sizeof(bases)) {
     THROW_BAD_ARGS();
   }
 
@@ -416,7 +416,7 @@ void enableUltrasonic() {
   CHECK_ARG(baseNumber);
 
   // Check that base number is valid
-  if (baseNumber < 0 || baseNumber > sizeof(bases)) {
+  if (baseNumber < 0 || baseNumber >= sizeof(bases)) {
     THROW_BAD_ARGS();
   }
 
@@ -434,7 +434,7 @@ void enableUltrasonicForTime() {
   CHECK_ARG(timeOn);
 
   // Check that pump number is valid
-  if (baseNumber < 0 || baseNumber > sizeof(bases)) {
+  if (baseNumber < 0 || baseNumber >= sizeof(bases)) {
     THROW_BAD_ARGS();
   }
 
@@ -461,7 +461,7 @@ void disableUltrasonic() {
   CHECK_ARG(baseNumber);
 
   // Check that base number is valid
-  if (baseNumber < 0 || baseNumber > sizeof(bases)) {
+  if (baseNumber < 0 || baseNumber >= sizeof(bases)) {
     THROW_BAD_ARGS();
   }
 
