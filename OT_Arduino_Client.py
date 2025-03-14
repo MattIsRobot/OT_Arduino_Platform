@@ -1,6 +1,7 @@
 import logging
 import time
 import serial
+import serial.tools.list_ports
 
 LOGGER = logging.getLogger(__name__)
 
@@ -181,7 +182,7 @@ class Arduino:
 
         while (time.time() - startTime < timeout_s):
             if self.connection.in_waiting > 0:
-                line += self.connection.read
+                line += self.connection.read()
                 if line.endswith(b'\n'):
                     line = line.decode().strip()
                     if line == "0":
