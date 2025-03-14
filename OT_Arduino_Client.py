@@ -74,7 +74,7 @@ class Arduino:
             baudrate=self.BAUD_RATE,
             timeout=timeout_s,
         )
-        time.sleep(1)  # Loadtime compensation, don't know if needed
+        time.sleep(3)  # Loadtime compensation, don't know if needed
 
         # Set target temperatures for heaters again
         for heaterNum, temp in enumerate(self.heaterSetPoints):
