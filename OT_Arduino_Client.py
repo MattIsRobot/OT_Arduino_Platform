@@ -6,9 +6,13 @@ LOGGER = logging.getLogger(__name__)
 
 class ArduinoException(Exception):
     pass
+class ArduinoTimeout(Exception):
+    pass
 
 class Arduino:
     """Class for the arduino robot relate activities for the openTron setup."""
+
+    heaterSetPoints = []
 
     def __init__(
         self,
@@ -69,7 +73,11 @@ class Arduino:
             baudrate=self.BAUD_RATE,
             timeout=timeout_s,
         )
-        time.sleep(2)  # Loadtime compensation, don't know if needed
+        time.sleep(1)  # Loadtime compensation, don't know if needed
+
+        # Set target temperatures for heaters again
+        for heaterNum, temp in enumerate(self.heaterSetPoints):
+            self.setTemp(heaterNum, temp)
 
 
     def disconnect(self) -> None:
@@ -77,11 +85,18 @@ class Arduino:
         self.connection.close()
 
 
-    def getPumpOn(self, pumpNumber:int) -> bool:
+    def refreshConnection(self) -> None:
+        self.disconnect()
+        time.sleep(0.5)
+        self.connect()
+
+
+    def getPumpOn(self, pumpNumber:int, retries:int=3) -> bool:
         LOGGER.info(f"Getting status of pump {pumpNumber}")
         self.connection.write(f"get_pump_state {pumpNumber}\n".encode())
         
-        res = self.__getResponse()
+        res = self.__getSafeResponse()
+
         if res[0] == "1":
             LOGGER.info(f"Pump {pumpNumber} is ON")
             return True
@@ -92,32 +107,38 @@ class Arduino:
         raise ArduinoException("Arduino returned invalid pump state")
 
 
-    def setPump(self, pumpNumber:int, turnOn:bool) -> None:
+    def setPump(self, pumpNumber:int, turnOn:bool, retries:int=3) -> None:
         LOGGER.info(f"{"Enabling" if turnOn else "Disabling"} pump {pumpNumber}")
         if turnOn:
             self.connection.write(f"set_pump_on {pumpNumber}\n".encode())
         else:
             self.connection.write(f"set_pump_off {pumpNumber}\n".encode())
             
-        self.__getResponse() # Ensures Arduino completes successfully
+        self.__getSafeResponse(retries, Arduino.setPump, (self, pumpNumber, turnOn, 0), not turnOn)
         LOGGER.debug(f"Pump {pumpNumber} is {"on" if turnOn else "off"}")
 
 
-    def setPumpOnTimer(self, pumpNumber:int, timeOn_ms:int) -> None:
+    def setPumpOnTimer(self, pumpNumber:int, timeOn_ms:int, retries:int=3) -> None:
         LOGGER.info(f"Enabling pump {pumpNumber} for {timeOn_ms}ms")
         self.connection.write(f"set_pump_on_time {pumpNumber} {timeOn_ms}\n".encode())
             
-        self.__getResponse(timeout_s=timeOn_ms/1000 + 3) # Ensures Arduino completes successfully
+        self.__getSafeResponse(retries, Arduino.setPumpOnTimer, (self, pumpNumber, timeOn_ms, 0), True, timeout_s=timeOn_ms/1000 + 3) # Ensures Arduino completes successfully
         LOGGER.debug(f"Pump {pumpNumber} ran for {timeOn_ms}ms")
 
 
-    def setTemp(self, baseNumber:int, targetTemp:float) -> None:
+    def setTemp(self, baseNumber:int, targetTemp:float, retries:int=3) -> None:
         targetTemp = round(targetTemp, 1) # All that's supported by the PID
 
         LOGGER.info(f"Setting base {baseNumber} temperature to {targetTemp}C")
         self.connection.write(f"set_base_temp {baseNumber} {targetTemp}\n".encode())
         
-        self.__getResponse() # Ensures Arduino completes successfully
+        self.__getSafeResponse(retries, Arduino.setTemp, (self, baseNumber, targetTemp, 0), False) # Ensures Arduino completes successfully
+
+        # Update the object to reset the temperatures whenever the connection resets
+        while len(self.heaterSetPoints) < baseNumber:
+            self.heaterSetPoints.append(0) # Fix size of tracked setpoints if it doesn't make sense
+        self.heaterSetPoints[baseNumber] = targetTemp
+
         LOGGER.debug(f"Base {baseNumber} temperature set successfully")
 
 
@@ -125,31 +146,31 @@ class Arduino:
         LOGGER.info(f"Getting temperature from base {baseNumber}")
         self.connection.write(f"get_base_temp {baseNumber}\n".encode())
         
-        res = self.__getResponse()
+        res = self.__getSafeResponse()
         temperature = float(res[0])
         LOGGER.debug(f"Base {baseNumber} returned a temperature reading of {temperature}C")
 
         return temperature
 
 
-    def setUltrasonic(self, baseNumber:int, turnOn:bool) -> None:
+    def setUltrasonic(self, baseNumber:int, turnOn:bool, retries:int=3) -> None:
         LOGGER.info(f"{"Enabling" if turnOn else "Disabling"} base {baseNumber}'s sonicator")
         if turnOn:
             self.connection.write(f"set_ultrasonic_on {baseNumber}\n".encode())
         else:
             self.connection.write(f"set_ultrasonic_off {baseNumber}\n".encode())
-            
-        self.__getResponse() # Ensures Arduino completes successfully
+
+        self.__getSafeResponse(retries, Arduino.setUltrasonic, (self, baseNumber, turnOn, 0), not turnOn)        
         LOGGER.debug(f"Base {baseNumber}'s sonicator is {"on" if turnOn else "off"}")
         
 
-    def setUltrasonicOnTimer(self, baseNumber:int, timeOn_ms:int) -> None:
+    def setUltrasonicOnTimer(self, baseNumber:int, timeOn_ms:int, retries:int=3) -> None:
         LOGGER.info(f"Enabling base {baseNumber}'s sonicator for {timeOn_ms}ms")
         self.connection.write(f"set_ultrasonic_on_time {baseNumber} {timeOn_ms}\n".encode())
             
-        self.__getResponse(timeout_s=timeOn_ms/1000 + 3) # Ensures Arduino completes successfully
+        self.__getSafeResponse(retries, Arduino.setUltrasonicOnTimer, (self, baseNumber, timeOn_ms, 0), True, timeout_s=timeOn_ms/1000 + 3) # Ensures Arduino completes successfully
         LOGGER.debug(f"Base {baseNumber}'s sonicator ran for {timeOn_ms}ms")
-    
+
 
     def __getResponse(self, timeout_s:int=3):
         # Collect all data sent over serial line
@@ -170,10 +191,29 @@ class Arduino:
                         raise ArduinoException("Arduino function recieved bad arguments")
                     else:
                         returnData.append(line)
-                        
-        LOGGER.error("Arduino response timed out")
-        raise ArduinoException("Arduino response timed out")
 
+        # Timed out, EMI may have fried the I2C line and caused the arduino to freeze
+        # Try restarting the Serial connection to reset the arduino
+        self.refreshConnection()
+        LOGGER.error("Arduino response timed out, resetting the Arduino")
+        raise ArduinoTimeout("Arduino response timed out")
+
+
+    def __getSafeResponse(self, retries, retryFunc, retryArgs, resetIsSuccess, timeout_s):
+        try:
+            return self.__getResponse(timeout_s=timeout_s) # Ensures Arduino completes successfully
+        except ArduinoTimeout:
+            if retries == 0 or resetIsSuccess: return
+
+            # Try again
+            tryCount = 0
+            while tryCount < retries:
+                try:
+                    return retryFunc(retryArgs)
+                except:
+                    tryCount += 1
+            raise ArduinoTimeout(f"Arduino failed all {1+retries} attempts")
+        
 
     def dispense_ml(self, pumpNumber:int, volume:float):
         """Dispense the given volume in ml.

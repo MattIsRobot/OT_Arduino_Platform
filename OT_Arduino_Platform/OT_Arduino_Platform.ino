@@ -476,6 +476,7 @@ void setup() {
   Serial.begin(115200);
   Wire.begin();
   Wire.setClock(100000);
+  Wire.setWireTimeout(250000); // us
 
   // Initialize the LCD
   lcd.begin(Wire);                  // Set up the LCD for I2C communication
