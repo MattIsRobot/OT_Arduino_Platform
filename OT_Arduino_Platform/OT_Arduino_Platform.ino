@@ -2,7 +2,7 @@
 #include <SerLCD.h>  // LCD over qwiic via I2C
 
 #include <EEPROM.h>            // For storing set temperatures
-#include <SparkFun_MCP9600.h>  // Thermocouple objects
+#include <Adafruit_ADS1X15.h>  // For thermistor ADC
 
 #include <SparkFun_Qwiic_Relay.h>  // For all qwiic relays
 
@@ -13,6 +13,7 @@
 
 #include <avr/interrupt.h>  // For custom uint64 timer instead of default uint32
 // Required to avoid problems with integer overflow after 47 days
+#include <avr/wdt.h>  // Include the watchdog timer header
 
 volatile uint64_t longTimer = 0;  // milliseconds since board was powered/last reset
 
@@ -78,7 +79,7 @@ public:
   }
 
   void setPWM(int localId, float dutyCycle) {
-    // qwiicRelay->setSlowPWM(localId, dutyCycle);
+    qwiicRelay->setSlowPWM(localId, dutyCycle);
   }
 
   void startup() {
@@ -121,6 +122,35 @@ public:
 using UltrasonicDriver = Relay;
 using Pump = Relay;
 
+// Constants for thermistor decoding
+#define RC 10000.0
+#define VCC 3.3
+#define R25 10000.0
+#define B2585 3977.0
+
+class ThermistorChannel {
+private:
+  uint8_t channel = 0;
+
+public:
+  static Adafruit_ADS1015 ads;
+
+  ThermistorChannel(uint8_t channel) {
+    this->channel = channel;
+  }
+
+  double getTemp()
+  {
+    if (channel > 3) return -1.0;
+    int16_t adc = ThermistorChannel.ads.readADC_SingleEnded(this->channel); //0-1023
+
+    double V = (adc * VCC / 1023.0);
+    double R = RC / ((VCC / V) - 1);
+    double Tk = 1.0 / (log(R / R25) / B2585 + (1.0 / 298.15));
+    return Tk - 273.15;
+  }
+}
+
 // Definitions for heater PID objects
 // Min and max temperatures of the heating elements
 #define HEATER_MAX 100
@@ -129,7 +159,7 @@ using Pump = Relay;
 class Heater {
 private:
   // Thermocouple
-  MCP9600 tempSensor;
+  ThermistorChannel* tempSensor;
   // Relay for heater
   Relay *heaterRelay;
 
@@ -140,8 +170,8 @@ private:
   double pidOut;
 
 public:
-  Heater(uint8_t tcAddress, Relay *relay, float kp, float ki, float kd) {
-    this->tempSensor.begin(tcAddress);
+  Heater(uint8_t tcChannel, Relay *relay, float kp, float ki, float kd) {
+    this->tempSensor = new ThermistorChannel(tcChannel);
     this->heaterRelay = relay;
 
     this->pidLoop = new AutoPID(
@@ -157,7 +187,7 @@ public:
   }
 
   double getTemperature() {
-    return tempSensor.getThermocoupleTemp();
+    return tempSensor->getTemp();
   }
 
   double getTargetTemperature() {
@@ -167,8 +197,7 @@ public:
   // Iterate on the PID loop
   void updateHeaterPID() {
     // Get current temperature reading
-    if (tempSensor.available())
-      currentTemperature = tempSensor.getThermocoupleTemp();
+    currentTemperature = tempSensor->getTemp();
 
     // Iterate PID
     pidLoop->run();
@@ -182,20 +211,6 @@ public:
     heaterRelay->setPWM(pidOut * 120 / HEATER_MAX);  // Calculation from Nis
   }
 
-  void checkThermocouple() {
-    // Check sensor connection
-    if (!tempSensor.isConnected()) {
-      lcd.setCursor(0, 0);
-      lcd.print("A TC is not connected");
-      Serial.println("A temperature sensor is not connected");
-      delay(10000);
-    } else if (!tempSensor.checkDeviceID()) {
-      lcd.setCursor(0, 0);
-      lcd.print("A TC addr. is wrong");
-      Serial.println("A temperature sensor address is wrong");
-      delay(10000);
-    }
-  }
 };
 
 class CellBase {
@@ -203,13 +218,10 @@ public:
   Heater *heater;
   UltrasonicDriver *ultrasonic;
 
-  CellBase(uint8_t thermoCoupleAddress, Relay *heaterRelay, float kp, float ki, float kd,
+  CellBase(uint8_t thermoCoupleChannel, Relay *heaterRelay, float kp, float ki, float kd,
            UltrasonicDriver *ultrasonicRelay) {
-    this->heater = new Heater(thermoCoupleAddress, heaterRelay, kp, ki, kd);
+    this->heater = new Heater(thermoCoupleChannel, heaterRelay, kp, ki, kd);
     this->ultrasonic = ultrasonicRelay;
-
-    // Verify thermocouple
-    heater->checkThermocouple();
   }
 };
 
@@ -349,7 +361,7 @@ void enablePumpForTime() {
   // Create RelayOnTimer struct for the loop
   RelayOnTimer *relayOnTimer = new RelayOnTimer();
   relayOnTimer->relay = &pumps[pumpNumber];
-  
+
   noInterrupts();  // Temporarily disable interrupts to safely copy the variable
   relayOnTimer->endTime = longTimer + timeOn;
   interrupts();  // Re-enable interrupts
@@ -444,7 +456,7 @@ void enableUltrasonicForTime() {
   // Create RelayOnTimer struct for the loop
   RelayOnTimer *relayOnTimer = new RelayOnTimer();
   relayOnTimer->relay = bases[baseNumber]->ultrasonic;
-  
+
   noInterrupts();  // Temporarily disable interrupts to safely copy the variable
   relayOnTimer->endTime = longTimer + timeOn;
   interrupts();  // Re-enable interrupts
@@ -476,7 +488,7 @@ void setup() {
   Serial.begin(115200);
   Wire.begin();
   Wire.setClock(100000);
-  Wire.setWireTimeout(250000); // us
+  Wire.setWireTimeout(250000);  // us
 
   // Initialize the LCD
   lcd.begin(Wire);                  // Set up the LCD for I2C communication
@@ -494,14 +506,22 @@ void setup() {
   quadRelay2 = new RelayBoard(new Qwiic_Relay(RELAY_ADDR2), 4, 4);
   solidStateRelay = new RelayBoard(new Qwiic_Relay(RELAY_SOLIDSTATE), 2, 8);
   singleRelay3 = new RelayBoard(new Qwiic_Relay(RELAY_ADDR3), 1, 9);
-  bases[0] = new CellBase(0x60, new Relay(solidStateRelay, 1), 0.12, 0.5, 1, new UltrasonicDriver(quadRelay2, 3));
-  bases[1] = new CellBase(0x67, new Relay(solidStateRelay, 2), 0.12, 0.5, 1, new UltrasonicDriver(quadRelay2, 4));
+  bases[0] = new CellBase(0, new Relay(solidStateRelay, 1), 0.12, 0.5, 1, new UltrasonicDriver(quadRelay2, 3));
+  bases[1] = new CellBase(1, new Relay(solidStateRelay, 2), 0.12, 0.5, 1, new UltrasonicDriver(quadRelay2, 4));
   pumps[0] = Pump(quadRelay, 1);
   pumps[1] = Pump(quadRelay, 2);
   pumps[2] = Pump(quadRelay, 3);
   pumps[3] = Pump(quadRelay, 4);
   pumps[4] = Pump(quadRelay2, 1);
   pumps[5] = Pump(quadRelay2, 2);
+
+  // Check ADS1015 is working
+  if (!ads.begin()) {
+    Serial.println("Error: ADS1015 not found.");
+    lcd.print("Error: ADS1015 not found.");
+    while (1)
+      ;
+  }
 
   // Populate hashtable for handlers
   commandHandlers.put("get_pump_state", getPumpState);
@@ -538,11 +558,15 @@ void setup() {
 // Interrupt handler for longTimer
 ISR(TIMER1_COMPA_vect) {
   // This will not overflow for half a billion years since uint64_t
-  longTimer = longTimer + 100; // 100ms have passed each time the interrupt triggers
+  longTimer = longTimer + 100;  // 100ms have passed each time the interrupt triggers
 }
 
 void loop() {
+  // Set up watchdog timer, if loop does not happen within 1s it will reset
+  wdt_reset();
+  wdt_enable(WDTO_1S);
   delay(50);
+
   // Make a local copy to avoid reading while being updated by ISR
   uint64_t currentCount;
   noInterrupts();  // Temporarily disable interrupts to safely copy the variable
