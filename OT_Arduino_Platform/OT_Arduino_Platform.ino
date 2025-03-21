@@ -133,8 +133,6 @@ private:
   uint8_t channel = 0;
 
 public:
-  static Adafruit_ADS1015 ads;
-
   ThermistorChannel(uint8_t channel) {
     this->channel = channel;
   }
@@ -142,7 +140,7 @@ public:
   double getTemp()
   {
     if (channel > 3) return -1.0;
-    int16_t adc = ThermistorChannel.ads.readADC_SingleEnded(this->channel); //0-1023
+    int16_t adc = ads.readADC_SingleEnded(this->channel); //0-1023
 
     double V = (adc * VCC / 1023.0);
     double R = RC / ((VCC / V) - 1);
@@ -515,7 +513,7 @@ void setup() {
   pumps[4] = Pump(quadRelay2, 1);
   pumps[5] = Pump(quadRelay2, 2);
 
-  // Check ADS1015 is working
+  // Check ADS1015 is working (Board for thermistor ADC over I2C)
   if (!ads.begin()) {
     Serial.println("Error: ADS1015 not found.");
     lcd.print("Error: ADS1015 not found.");
@@ -553,6 +551,10 @@ void setup() {
   TIMSK1 |= (1 << OCIE1A);              // Enable timer compare interrupt
 
   interrupts();  // Enable interrupts
+
+  // Send startup message
+  // Used by python client to know a reset happened even if the python did not trigger this
+  Serial.println("START");
 }
 
 // Interrupt handler for longTimer
