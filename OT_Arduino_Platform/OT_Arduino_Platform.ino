@@ -127,13 +127,14 @@ using Pump = Relay;
 #define VCC 3.3
 #define R25 10000.0
 #define B2585 3977.0
+Adafruit_ADS1015 ads;
+
 
 class ThermistorChannel {
 private:
   uint8_t channel = 0;
 
 public:
-  static Adafruit_ADS1015 ads;
 
   ThermistorChannel(uint8_t channel) {
     this->channel = channel;
@@ -142,14 +143,14 @@ public:
   double getTemp()
   {
     if (channel > 3) return -1.0;
-    int16_t adc = ThermistorChannel.ads.readADC_SingleEnded(this->channel); //0-1023
+    int16_t adc = ads.readADC_SingleEnded(this->channel); //0-1023
 
     double V = (adc * VCC / 1023.0);
     double R = RC / ((VCC / V) - 1);
     double Tk = 1.0 / (log(R / R25) / B2585 + (1.0 / 298.15));
     return Tk - 273.15;
   }
-}
+};
 
 // Definitions for heater PID objects
 // Min and max temperatures of the heating elements
@@ -236,7 +237,7 @@ Vector<String> tokens;
 RelayBoard *quadRelay;
 // Relay 4-7
 // Remember this is NOT a standard I2C add - it was coded to the quad relay.
-#define RELAY_ADDR2 0x6C  // 0x09
+#define RELAY_ADDR2 0x40  // 0x09
 RelayBoard *quadRelay2;
 // Solid state relays for 110VAC
 #define RELAY_SOLIDSTATE 0x0A
@@ -486,10 +487,11 @@ void disableUltrasonic() {
 void setup() {
   // Init serial and I2C communication
   Serial.begin(115200);
+  Serial.println("STARTUP");
   Wire.begin();
   Wire.setClock(100000);
-  Wire.setWireTimeout(250000);  // us
-
+  // Wire.setWireTimeout(250000);  // us
+  Serial.println("S1");
   // Initialize the LCD
   lcd.begin(Wire);                  // Set up the LCD for I2C communication
   lcd.setBacklight(255, 255, 255);  // Set backlight to bright white
@@ -497,31 +499,37 @@ void setup() {
   lcd.disableSplash();              // Disables the splash screen
   lcd.clear();                      // Clear the display - this moves the cursor to home position as well
   lcd.print("Booting!");
+  Serial.println("S2");
 
   // Setup vector to store relays on timers
   relaysOnTimers.setStorage(relaysOnTimersStorage);
+  Serial.println("S3");
 
   // Init board components
   quadRelay = new RelayBoard(new Qwiic_Relay(RELAY_ADDR), 4, 0);
   quadRelay2 = new RelayBoard(new Qwiic_Relay(RELAY_ADDR2), 4, 4);
   solidStateRelay = new RelayBoard(new Qwiic_Relay(RELAY_SOLIDSTATE), 2, 8);
   singleRelay3 = new RelayBoard(new Qwiic_Relay(RELAY_ADDR3), 1, 9);
-  bases[0] = new CellBase(0, new Relay(solidStateRelay, 1), 0.12, 0.5, 1, new UltrasonicDriver(quadRelay2, 3));
-  bases[1] = new CellBase(1, new Relay(solidStateRelay, 2), 0.12, 0.5, 1, new UltrasonicDriver(quadRelay2, 4));
+  bases[0] = new CellBase(0, new Relay(solidStateRelay, 1), 0.12, 0.5, 1, new UltrasonicDriver(quadRelay2, 4));
+  bases[1] = new CellBase(1, new Relay(solidStateRelay, 2), 0.12, 0.5, 1, new UltrasonicDriver(quadRelay2, 3));
   pumps[0] = Pump(quadRelay, 1);
   pumps[1] = Pump(quadRelay, 2);
   pumps[2] = Pump(quadRelay, 3);
   pumps[3] = Pump(quadRelay, 4);
   pumps[4] = Pump(quadRelay2, 1);
   pumps[5] = Pump(quadRelay2, 2);
+  Serial.println("S4");
 
   // Check ADS1015 is working
   if (!ads.begin()) {
     Serial.println("Error: ADS1015 not found.");
     lcd.print("Error: ADS1015 not found.");
-    while (1)
+    
+    wdt_enable(WDTO_1S);
+    while(1)
       ;
   }
+  Serial.println("S5");
 
   // Populate hashtable for handlers
   commandHandlers.put("get_pump_state", getPumpState);
@@ -535,6 +543,7 @@ void setup() {
 
   commandHandlers.put("get_base_temp", getBaseTemp);
   commandHandlers.put("set_base_temp", setBaseTemp);
+  Serial.println("S6");
 
   // Set the targetTemperatures based on the EEPROM
   // read_from_eeprom_setPoints();
@@ -553,6 +562,7 @@ void setup() {
   TIMSK1 |= (1 << OCIE1A);              // Enable timer compare interrupt
 
   interrupts();  // Enable interrupts
+  Serial.println("S7");
 }
 
 // Interrupt handler for longTimer
@@ -562,10 +572,11 @@ ISR(TIMER1_COMPA_vect) {
 }
 
 void loop() {
-  // Set up watchdog timer, if loop does not happen within 1s it will reset
+  // Set up watchdog timer, if loop does not happen within 2s it will reset
   wdt_reset();
-  wdt_enable(WDTO_1S);
-  delay(50);
+  wdt_enable(WDTO_2S);
+  Serial.println(".");
+  delay(500);
 
   // Make a local copy to avoid reading while being updated by ISR
   uint64_t currentCount;
