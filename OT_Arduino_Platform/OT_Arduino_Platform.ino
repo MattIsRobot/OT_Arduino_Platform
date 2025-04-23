@@ -3,6 +3,7 @@
 
 #include <EEPROM.h>            // For storing set temperatures
 #include <Adafruit_ADS1X15.h>  // For thermistor ADC
+Adafruit_ADS1015 ads;
 
 #include <SparkFun_Qwiic_Relay.h>  // For all qwiic relays
 
@@ -16,6 +17,11 @@
 #include <avr/wdt.h>  // Include the watchdog timer header
 
 volatile uint64_t longTimer = 0;  // milliseconds since board was powered/last reset
+
+// **BOARD CONFIG**
+// First config included is used
+#include "OTFlex_Config.h"
+#include "OT2_Config.h"
 
 #define FUNCTION_COMPLETE() Serial.println("0");
 #define THROW_BAD_ARGS() \
@@ -122,12 +128,6 @@ public:
 using UltrasonicDriver = Relay;
 using Pump = Relay;
 
-// Constants for thermistor decoding
-#define RC 10000.0
-#define VCC 3.3
-#define R25 10000.0
-#define B2585 3977.0
-
 class ThermistorChannel {
 private:
   uint8_t channel = 0;
@@ -141,18 +141,14 @@ public:
   {
     if (channel > 3) return -1.0;
     int16_t adc = ads.readADC_SingleEnded(this->channel); //0-1023
-
+    
     double V = (adc * VCC / 1023.0);
     double R = RC / ((VCC / V) - 1);
     double Tk = 1.0 / (log(R / R25) / B2585 + (1.0 / 298.15));
     return Tk - 273.15;
   }
-}
+};
 
-// Definitions for heater PID objects
-// Min and max temperatures of the heating elements
-#define HEATER_MAX 100
-#define HEATER_MIN 0
 
 class Heater {
 private:
@@ -229,18 +225,9 @@ char charArray[50];
 Vector<String> tokens;
 
 // Define relay boards wired in
-// Relay 0-3
-#define RELAY_ADDR 0x6D  // Alternate address 0x6C
 RelayBoard *quadRelay;
-// Relay 4-7
-// Remember this is NOT a standard I2C add - it was coded to the quad relay.
-#define RELAY_ADDR2 0x6C  // 0x09
 RelayBoard *quadRelay2;
-// Solid state relays for 110VAC
-#define RELAY_SOLIDSTATE 0x0A
 RelayBoard *solidStateRelay;
-// Relay 8
-#define RELAY_ADDR3 0x18
 RelayBoard *singleRelay3;
 
 // Create hashtable to map commands to their associated handlers
@@ -481,12 +468,26 @@ void disableUltrasonic() {
   FUNCTION_COMPLETE();
 }
 
+void enableActuatedReactor() {
+  digitalWrite(ACTUATED_REACTOR_PIN, HIGH);
+
+  FUNCTION_COMPLETE();
+}
+
+void disableActuatedReactor() {
+  digitalWrite(ACTUATED_REACTOR_PIN, LOW);
+
+  FUNCTION_COMPLETE();
+}
+
 void setup() {
   // Init serial and I2C communication
   Serial.begin(115200);
   Wire.begin();
   Wire.setClock(100000);
-  Wire.setWireTimeout(250000);  // us
+
+  // setup pinmode for actuated reactor
+  pinMode(ACTUATED_REACTOR_PIN, OUTPUT);
 
   // Initialize the LCD
   lcd.begin(Wire);                  // Set up the LCD for I2C communication
@@ -534,6 +535,13 @@ void setup() {
   commandHandlers.put("get_base_temp", getBaseTemp);
   commandHandlers.put("set_base_temp", setBaseTemp);
 
+  if (HAS_ACUATED_REACTOR)
+  {
+    commandHandlers.put("set_reactor_on", enableActuatedReactor);
+    commandHandlers.put("set_reactor_off", disableActuatedReactor);
+  
+  }
+
   // Set the targetTemperatures based on the EEPROM
   // read_from_eeprom_setPoints();
 
@@ -551,10 +559,6 @@ void setup() {
   TIMSK1 |= (1 << OCIE1A);              // Enable timer compare interrupt
 
   interrupts();  // Enable interrupts
-
-  // Send startup message
-  // Used by python client to know a reset happened even if the python did not trigger this
-  Serial.println("START");
 }
 
 // Interrupt handler for longTimer
@@ -566,8 +570,9 @@ ISR(TIMER1_COMPA_vect) {
 void loop() {
   // Set up watchdog timer, if loop does not happen within 1s it will reset
   wdt_reset();
-  wdt_enable(WDTO_1S);
-  delay(50);
+  wdt_enable(WDTO_2S);
+  // Serial.println(".");
+  delay(200);
 
   // Make a local copy to avoid reading while being updated by ISR
   uint64_t currentCount;

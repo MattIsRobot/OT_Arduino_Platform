@@ -109,14 +109,14 @@ class Arduino:
 
 
     def setPump(self, pumpNumber:int, turnOn:bool, retries:int=3) -> None:
-        LOGGER.info(f"{"Enabling" if turnOn else "Disabling"} pump {pumpNumber}")
+        LOGGER.info(f"{'Enabling' if turnOn else 'Disabling'} pump {pumpNumber}")
         if turnOn:
             self.connection.write(f"set_pump_on {pumpNumber}\n".encode())
         else:
             self.connection.write(f"set_pump_off {pumpNumber}\n".encode())
             
         self.__getSafeResponse(retries, Arduino.setPump, (self, pumpNumber, turnOn, 0), not turnOn)
-        LOGGER.debug(f"Pump {pumpNumber} is {"on" if turnOn else "off"}")
+        LOGGER.debug(f"Pump {pumpNumber} is {'on' if turnOn else 'off'}")
 
 
     def setPumpOnTimer(self, pumpNumber:int, timeOn_ms:int, retries:int=3) -> None:
@@ -147,7 +147,7 @@ class Arduino:
         LOGGER.info(f"Getting temperature from base {baseNumber}")
         self.connection.write(f"get_base_temp {baseNumber}\n".encode())
         
-        res = self.__getSafeResponse()
+        res = self.__getResponse()
         temperature = float(res[0])
         LOGGER.debug(f"Base {baseNumber} returned a temperature reading of {temperature}C")
 
@@ -155,14 +155,14 @@ class Arduino:
 
 
     def setUltrasonic(self, baseNumber:int, turnOn:bool, retries:int=3) -> None:
-        LOGGER.info(f"{"Enabling" if turnOn else "Disabling"} base {baseNumber}'s sonicator")
+        LOGGER.info(f"{'Enabling' if turnOn else 'Disabling'} base {baseNumber}'s sonicator")
         if turnOn:
             self.connection.write(f"set_ultrasonic_on {baseNumber}\n".encode())
         else:
             self.connection.write(f"set_ultrasonic_off {baseNumber}\n".encode())
 
         self.__getSafeResponse(retries, Arduino.setUltrasonic, (self, baseNumber, turnOn, 0), not turnOn)        
-        LOGGER.debug(f"Base {baseNumber}'s sonicator is {"on" if turnOn else "off"}")
+        LOGGER.debug(f"Base {baseNumber}'s sonicator is {'on' if turnOn else 'off'}")
         
 
     def setUltrasonicOnTimer(self, baseNumber:int, timeOn_ms:int, retries:int=3) -> None:
@@ -183,15 +183,17 @@ class Arduino:
         while (time.time() - startTime < timeout_s):
             if self.connection.in_waiting > 0:
                 line += self.connection.read()
-                if line.endswith(b'\n'):
-                    line = line.decode().strip()
-                    if line == "0":
+                # print(line)
+                if line.endswith(b'\r\n'):
+                    lineStr = line.decode().strip()
+                    line = b''
+                    if lineStr == "0":
                         return returnData
-                    elif line == "1":
+                    elif lineStr == "1":
                         LOGGER.error("Arduino function recieved bad arguments")
                         raise ArduinoException("Arduino function recieved bad arguments")
                     else:
-                        returnData.append(line)
+                        returnData.append(lineStr)
 
         # Timed out, EMI may have fried the I2C line and caused the arduino to freeze
         # Try restarting the Serial connection to reset the arduino
@@ -200,7 +202,7 @@ class Arduino:
         raise ArduinoTimeout("Arduino response timed out")
 
 
-    def __getSafeResponse(self, retries, retryFunc, retryArgs, resetIsSuccess, timeout_s):
+    def __getSafeResponse(self, retries, retryFunc, retryArgs, resetIsSuccess, timeout_s=2):
         try:
             return self.__getResponse(timeout_s=timeout_s) # Ensures Arduino completes successfully
         except ArduinoTimeout:
