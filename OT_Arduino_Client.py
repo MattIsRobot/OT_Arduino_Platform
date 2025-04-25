@@ -117,6 +117,17 @@ class Arduino:
             
         self.__getSafeResponse(retries, Arduino.setPump, (self, pumpNumber, turnOn, 0), not turnOn)
         LOGGER.debug(f"Pump {pumpNumber} is {'on' if turnOn else 'off'}")
+        
+        
+    def setActuatedReactor(self, open:bool, retries:int=3) -> None:
+        LOGGER.info(f"{'Openning' if open else 'Closing'} actuated reatcor")
+        if open:
+            self.connection.write(f"set_reactor_on\n".encode())
+        else:
+            self.connection.write(f"set_reatcor_off\n".encode())
+            
+        self.__getSafeResponse(retries, Arduino.setPump, (self, open, 0), False)
+        LOGGER.debug(f"Actuated reactor is {'openning' if open else 'closing'}")
 
 
     def setPumpOnTimer(self, pumpNumber:int, timeOn_ms:int, retries:int=3) -> None:
